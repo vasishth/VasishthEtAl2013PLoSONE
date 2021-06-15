@@ -1,0 +1,998 @@
+\documentclass{article}
+
+\title{Data analyses for PLoS One paper Vasishth et al 2013}
+\author{Shravan Vasishth}
+\date{Date of compilation: \today}
+\begin{document}
+\SweaveOpts{concordance=TRUE}
+
+\maketitle
+
+Note: This compilation needs to be cleaned up a bit. I (SV) will do this soon. But the basic analyses should be reproducible.
+
+<<>>=
+library(plyr)
+@
+
+\section{Gibson and Wu's data}
+
+<<label=gwdataload,echo=FALSE>>=
+gwexpt <- read.table("gwdatainpaper.txt")
+
+colnames(gwexpt) <- c("subj","item","type","pos","word", "correct","rt")
+
+data<-gwexpt[ , c(1, 2, 3, 4, 6, 7)]
+
+## not really needed:
+#write.table(data, file="gwdatacleaned.txt")
+
+pos8data<-subset(data,pos==8)
+
+hist(pos8data$rt)
+
+#write.table(pos8data,file="sampledataSU2013.txt")
+
+## rename data frame
+dat<-data
+
+head(dat)
+
+## 37 subjects
+length(unique(dat$subj))
+
+xtabs(~subj+item,dat)
+
+length(sort(unique(dat$subj)))
+@
+
+
+Next we do some pre-processing to get ready for analysis:
+
+<<label=gwpreproc,echo=FALSE>>=
+questions <- subset(gwexpt,correct%in%c(1,0)) 
+
+questions$correct <- as.numeric(as.character(questions$correct))
+
+#subj-ext: c0 | c1 | c2 | c3 | say | V1 | N1 | DE | N2 | N2+1 | N2+2 | N2+3
+#obj-ext : c0 | c1 | c2 | c3 | say | N1 | V1 | DE | N2 | N2+1 | N2+2 | N2+3
+
+# rc started at pos 5; de was always at pos7
+
+#       subj-ext  obj-ext   
+#so          -1        1   effect of subject-object RC
+
+
+de2<-cbind(subset(gwexpt,pos=="5"),region="de2") ## position de-2
+de1<-cbind(subset(gwexpt,pos=="6"),region="de1") ## position de-1
+
+## de2 and de1 are always contiguous, on successive lines. No missing data:
+dim(de2)
+dim(de1)
+
+## sum up V+N and N+V sequences:
+de12sum<-de1$rt+de2$rt
+
+## add to de1 a column for the sum of de1 and d2 rt's.
+## Note that this is a destructive step, the rt column is
+## overwritten. I had to do this to be able to assemble the whole
+## dataset into critdata below. Everything is recoverable by 
+## rerunning the script.
+de1$rt<-de12sum
+de1$region<-factor("VN/NV")
+
+de <- cbind(subset(gwexpt,pos=="7"),region="de")
+
+hnoun <- cbind(subset(gwexpt,pos=="8"),region="headnoun")
+
+## sum up de and noun RTs:
+de.hnoun.rt<-de$rt+hnoun$rt
+
+## make a copy of hnoun:
+dehnoun<-hnoun
+## replace rt column in hnoun with de.hnoun.rt:
+dehnoun$rt<-de.hnoun.rt
+## rename region
+dehnoun$region<-"dehnoun"
+
+hnoun1 <- cbind(subset(gwexpt,pos=="9"),region="headnoun1")
+
+critdata <- rbind(de1,de,dehnoun,hnoun,hnoun1)
+
+## needed later for combined analysis:
+gwcritdata<-critdata
+
+library(lme4)
+library(car)
+library(ggplot2)
+
+## treatment contrasts should be OK for analysis...
+critdata$type<-factor(critdata$type)
+contrasts(critdata$type)
+
+## but let's do a regular anova style centering, sum contrasts:
+critdata$so<- ifelse(critdata$type%in%c("subj-ext"),-0.5,0.5)
+@
+
+<<>>=
+hnoun$cond2<-factor(ifelse(hnoun$type=="obj-ext","object relative","subject relative"),levels=c("subject relative","object relative"))
+
+tiff("boxplotsboxcox.tiff",res=300,width=17.35,#height=23.35,
+     height=17.35,
+     units="cm",compression="lzw",bg="white")
+par( mfrow=c(2,2) )
+
+boxplot(rt~cond2,hnoun,ylab="reading time (ms)")
+boxplot(log(rt)~cond2,hnoun,ylab="log reading time (log ms)")
+boxplot(-1000/rt~cond2,hnoun,ylab="negative reciprocal reading time (-1/s)")
+
+library(MASS)
+boxcox(rt~type*subj,data=hnoun)
+dev.off()
+@
+
+High resolution image:
+
+<<>>=
+bitmap("fig1.tiff", height = 4, width = 4, units = 'in', type="tifflzw", res=300)
+
+par( mfrow=c(2,2) )
+
+boxplot(rt~cond2,hnoun,ylab="reading time (ms)")
+boxplot(log(rt)~cond2,hnoun,ylab="log reading time (log ms)")
+boxplot(-1000/rt~cond2,hnoun,ylab="negative reciprocal reading time (-1/s)")
+
+library(MASS)
+boxcox(rt~type*subj,data=hnoun)
+
+dev.off()
+@
+
+
+The Box-Cox transform suggests using the inverse for the head noun and the region after:
+
+<<fig=TRUE,label=gwboxcox>>=
+cond<-factor(ifelse(critdata$type=="obj-ext","a","b"))
+
+critdata$cond<-cond
+
+## all regions:
+lattice::bwplot(rt~cond|region,data=critdata,layout=c(5,1))
+
+par( mfrow=c(3,3) )
+
+library(MASS)
+#boxcox(rt~type*subj,data=critdata[critdata$region=="de1", ])
+
+boxcox(rt~type*subj,data=critdata[critdata$region=="de", ])
+
+boxcox(rt~cond*subj,data=critdata[critdata$region=="headnoun", ])
+
+boxcox(rt~type*subj,data=critdata[critdata$region=="headnoun1", ])
+
+## transform:
+critdata$rrt <- -1000/critdata$rt
+
+means.rrt<-round(with(critdata,tapply(rrt,IND=list(region,type),mean)),digits=3)
+
+means.rt<-round(with(critdata,tapply(rt,IND=list(region,type),mean)),digits=0)
+
+library(xtable)
+xtable(cbind(means.rt,means.rrt))
+@
+
+<<>>=
+(gw.VN.rrt <- lmer(rrt~so+(1+so|subj)+(1+so|item),subset(critdata,region=="VN/NV")))
+
+qqPlot(residuals(gw.VN.rrt))
+
+(gw.de.rrt <- lmer(rrt~so+(1+so|subj)+(1+so|item),subset(critdata,region=="de")))
+
+qqPlot(residuals(gw.de.rrt))
+
+(gw.hnoun.rrt <- lmer(rrt~so+(1+so|subj)+(1+so|item),subset(critdata,region=="headnoun")))
+
+qqPlot(residuals(gw.hnoun.rrt))
+
+(gw.dehnoun.rrt <- lmer(rrt~so+(1+so|subj)+(1+so|item),subset(critdata,region=="dehnoun")))
+
+qqPlot(residuals(gw.dehnoun.rrt))
+
+(gw.hnoun1.rrt <- lmer(rrt~so+(1+so|subj)+(1+so|item),subset(critdata,region=="headnoun1")))
+
+qqPlot(residuals(gw.hnoun1.rrt))
+
+## get coefs, SEs, t-values:
+gw.VN<-c(fixef(gw.VN.rrt)[2],
+      sqrt(vcov(gw.VN.rrt))[2,2],
+      fixef(gw.VN.rrt)[2]/sqrt(vcov(gw.VN.rrt))[2,2])
+
+gw.de<-c(fixef(gw.de.rrt)[2],
+      sqrt(vcov(gw.de.rrt))[2,2],
+      fixef(gw.de.rrt)[2]/sqrt(vcov(gw.de.rrt))[2,2])
+
+gw.hn<-c(fixef(gw.hnoun.rrt)[2],
+      sqrt(vcov(gw.hnoun.rrt))[2,2],
+      fixef(gw.hnoun.rrt)[2]/sqrt(vcov(gw.hnoun.rrt))[2,2])
+
+gw.hn1<-c(fixef(gw.hnoun1.rrt)[2],
+      sqrt(vcov(gw.hnoun1.rrt))[2,2],
+      fixef(gw.hnoun1.rrt)[2]/sqrt(vcov(gw.hnoun1.rrt))[2,2])
+
+gwresults<-rbind(gw.VN,gw.de,gw.hn,gw.hn1)
+rownames(gwresults)<-c("VN/NV","de","head noun","head noun+1")
+colnames(gwresults)<-c("coef","SE","t-value")
+
+xtable(round(gwresults,digits=2))
+@
+
+
+We have predictions for the head noun and the word after that, but with reciprocal RT these are not borne out, cf the published paper's results based on raw RTs (also see below).
+
+
+<<label=gwlmerfitsrt>>=
+(gw.hn.rt <- lmer(rt~so+(1+so|subj)+(1+so|item),subset(critdata,region=="headnoun")))
+
+(gw.hn.rrt <- lmer(-1000/rt~so+(1+so|subj)+(1+so|item),subset(critdata,region=="headnoun")))
+
+
+(gw.hn.lrt <- lmer(log(rt)~so+(1+so|subj)+(1+so|item),subset(critdata,region=="headnoun")))
+
+@
+
+<<label=gwlmerfitsrrtresid>>=
+#tiff("residuals.tiff",res=300,width=7.35,#height=23.35,
+#     height=17.35,
+#     units="cm",compression="lzw",bg="white")
+#
+
+bitmap("fig2.tiff", height = 4, width = 4, units = 'in', type="tifflzw", res=600)
+
+op<-par(mfrow=c(1,3),pty="s")
+
+par(cex.lab=1.3)
+
+qqPlot(residuals(gw.hn.rt),
+       ylab="raw reading time (ms)",
+       envelope=F)
+qqPlot(residuals(gw.hn.lrt),ylab="log reading times",envelope=F)
+qqPlot(residuals(gw.hn.rrt),ylab="negative reciprocal reading times",envelope=F)
+
+dev.off()
+@
+
+On this raw reading time scale, the differences in rt are about 178 ms at the head noun (OR advantage):
+
+<<label=gwmeans>>=
+means<-with(critdata,tapply(rt,IND=list(region,type),mean))
+@
+
+However, standard deviation is not similar:
+
+<<>>=
+sds<-with(critdata,tapply(rt,IND=list(region,type),sd))
+@
+
+At the head noun, the ratio of variances is:
+
+<<label=gwsdheadnoun>>=
+round(sds[4,2]/sds[4,1],digits=1)
+@
+
+
+
+Note that Gibson and Wu fit raw reading times, and got significant effects (OR advantage). Here is an lmer fit analogous (but not identical) to what they did:
+
+<<gwlmerrawrtfits>>=
+##head noun:
+(gw.hn <- lmer(rt~so+(1|item)+(1|subj),subset(critdata,region=="headnoun")))
+@
+
+The model estimates that ORs are about 120 ms easier to process than SRs at the head noun.
+
+However, statistical significance here is a consequence of the normality assumption (of residuals) not being satisfied; I think that, more precisely, it's the equal variance assumption that's an issue (SR variance is much higher due to those extreme values). 
+
+<<gwlmerrawrtresid,fig=TRUE>>=
+qqPlot(residuals(gw.hn))
+@
+
+Compare with the reciprocal rt's residuals:
+
+<<fig=TRUE>>=
+qqPlot(residuals(gw.hnoun.rrt))
+@
+
+Plotting for paper:
+
+<<>>=
+se <- function(x) 
+  {
+  	y <- x[!is.na(x)] # remove the missing values 
+	sqrt(var(as.vector(y))/length(y))
+}
+
+#############Remove between subject variance for SE###############
+# (a) Aggregate to Subject x Condition means
+
+library(reshape)
+data.rs <- melt(critdata, id=c("type","region", "subj"), measure=c("rt"),na.rm=TRUE)
+
+data.id <- data.frame(cast(data.rs, subj + type + region ~ ., function(x) c(rt=mean(x), N=length(x) ) ))
+
+# (b) Remove between-subject variance
+##
+(GM <- mean(tapply(data.id$rt, data.id$subj, mean)))
+
+data.id <- ddply(data.id, .(subj), transform, rt.w = rt - mean(rt) + GM)  
+
+# (c) Compute condition means and error bars:  +/- 2 SE of means after removal of between-subject variance
+temp<-melt(data.id, id.var=c("subj","type","region"), measure.var="rt.w")
+
+(M.id.w <- cast(temp,type+region  ~ ., 
+                function(x) c(M=mean(x), SE=sd(x)/sqrt(length(x)), N=length(x) ) ) ) 
+@
+
+No actual plotting needed here.
+
+<<>>=
+## to be used later:
+gwcritdata<-critdata
+@
+
+
+\section{Experiment 1: Kuo study}
+
+%\subsection{Expt 2 (Kuo's diploma thesis)}
+
+<<>>=
+## Design:
+#condition a: SRC    V | OBJ | DE | SBJ (head) | N1 | N2 | (N3)
+#condition c: ORC    SBJ | V | DE | OBJ (head) | N1 | N2 | (N3)
+
+critdata<-read.table("expt1critdata.txt",header=T)
+@
+
+
+a=subj rel, c=obj rel.
+
+<<fig=TRUE>>=
+par( mfrow=c(2,3) )
+
+boxcox(rt~condition*subj,data=critdata[critdata$region=="de", ])
+boxcox(rt~condition*subj,data=critdata[critdata$region=="headnoun", ])
+boxcox(rt~condition*subj,data=critdata[critdata$region=="headnoun1", ])
+
+## transform:
+critdata$rrt <- -1000/critdata$rt
+critdata.orig<-critdata
+
+boxplot(rrt~condition,subset(critdata,region=="de")) 
+boxplot(rrt~condition,subset(critdata,region=="headnoun")) 
+boxplot(rrt~condition,subset(critdata,region=="headnoun1")) 
+
+boxplot(rt~condition,subset(critdata,region=="de")) 
+boxplot(rt~condition,subset(critdata,region=="headnoun")) 
+boxplot(rt~condition,subset(critdata,region=="headnoun1")) 
+
+## critical regions:
+headnoun <- subset(critdata,region=="headnoun")
+headnoun1 <- subset(critdata,region=="headnoun1")
+@
+
+
+Reviewer asks for full dataset:
+<<>>=
+## load full dataset for PLoS One paper plot:
+critdata<-read.table("expt1fulldata.txt",header=T)
+critdata<-critdata[,c(1,3,4,8,11)]
+
+critdata<-subset(critdata,rcpos>0)
+
+summary(critdata)
+
+region<-ifelse(critdata$rcpos==1,"V/N",
+            ifelse(critdata$rcpos==2,"N/V",
+              ifelse(critdata$rcpos==3,"de",
+                     ifelse(critdata$rcpos==4,"head noun",
+                            ifelse(critdata$rcpos==5,"head noun+1",NA)))))
+       
+critdata$region<-region
+critdata$region<-factor(critdata$region,levels=c("V/N","N/V","de","head noun","head noun+1"))
+
+critdata$cond<-factor(ifelse(critdata$condition=="a",
+                      "subject relative","object relative"),levels=c("subject relative","object relative"))
+
+library(reshape)
+data.rs <- melt(critdata, id=c("cond","region", "subj"), measure=c("rt"),na.rm=TRUE)
+
+data.id <- data.frame(cast(data.rs, subj + cond + region ~ ., function(x) c(rt=mean(x), N=length(x) ) ))
+
+# (b) Remove between-subject variance
+##
+(GM <- mean(tapply(data.id$rt, data.id$subj, mean)))
+
+data.id <- ddply(data.id, .(subj), transform, rt.w = rt - mean(rt) + GM)  
+
+# (c) Compute condition means and error bars:  +/- 2 SE of means after removal of between-subject variance
+temp<-melt(data.id, id.var=c("subj","cond","region"), measure.var="rt.w")
+
+(M.id.w <- cast(temp,cond+region  ~ ., 
+                function(x) c(M=mean(x), SE=sd(x)/sqrt(length(x)), N=length(x) ) ) ) 
+
+byregion.plot<-function(data,
+                        mytitle,k=1,
+                        x.lab="region",
+                        y.lab="reading time [msec]"){
+  ggplot(data,aes(x=region,y=M,
+                       group=cond)) + 
+     geom_point(shape=21,size=k*3) +
+     geom_line(aes(linetype=cond),size=k) +
+     geom_errorbar(aes(ymin=M-2*SE, 
+                       ymax=M+2*SE),
+                   width=.1,size=k)+
+     xlab(x.lab)+
+     ylab(y.lab)+             
+     labs(title=mytitle) +
+     theme_bw() 
+}
+
+## plot:
+#tiff("expt1.tiff",res=300,width=17.35,
+#     height=15.35,
+#     units="cm",compression="lzw",bg
+#="white")
+
+bitmap("fig3.tiff", height = 4, width = 7, units = 'in', type="tifflzw", res=600)
+
+(plot.regions<-byregion.plot(M.id.w,
+              mytitle="Experiment 1",k=.5,
+              x.lab="region",y.lab="reading time [msec]")
+)
+dev.off()
+@
+
+By region analyses demanded by reviewer: we focus on de, head noun, head noun+1.
+
+<<>>=
+critdata$so<-ifelse(critdata$condition=="a",-0.5,0.5)
+
+## we stay with negative reciprocal for consistency:
+with(subset(critdata,region=="de"),boxcox(rt~condition*subj))
+with(subset(critdata,region=="head noun"),boxcox(rt~condition*subj))
+
+with(subset(critdata,region=="head noun+1"),boxcox(rt~condition*subj))
+
+critdata$rrt<- -1000/critdata$rt
+
+(kuo.de.rrt <- lmer(rrt~so+(1+so|subj)+(1+so|item),subset(critdata,region=="de")))
+
+qqPlot(residuals(gw.de.rrt))
+
+(kuo.hnoun.rrt <- lmer(rt~so+(1+so|subj)+(1+so|item),subset(critdata,region=="head noun")))
+
+hist(residuals(kuo.hnoun.rrt))
+
+qqPlot(residuals(kuo.hnoun.rrt))
+
+qqPlot(residuals(gw.hnoun.rrt))
+
+(kuo.hnoun1.rrt <- lmer(rrt~so+(1+so|subj)+(1+so|item),subset(critdata,region=="head noun+1")))
+
+qqPlot(residuals(gw.hnoun1.rrt))
+@
+
+Tabulating results:
+
+<<>>=
+## get coefs, SEs, t-values:
+kuo.de<-c(fixef(kuo.de.rrt)[2],
+      sqrt(vcov(kuo.de.rrt))[2,2],
+      fixef(kuo.de.rrt)[2]/sqrt(vcov(kuo.de.rrt))[2,2])
+
+kuo.hnoun<-c(fixef(kuo.hnoun.rrt)[2],
+      sqrt(vcov(kuo.hnoun.rrt))[2,2],
+      fixef(kuo.hnoun.rrt)[2]/sqrt(vcov(kuo.hnoun.rrt))[2,2])
+
+kuo.hnoun1<-c(fixef(kuo.hnoun1.rrt)[2],
+      sqrt(vcov(kuo.hnoun1.rrt))[2,2],
+      fixef(kuo.hnoun1.rrt)[2]/sqrt(vcov(kuo.hnoun1.rrt))[2,2])
+
+kuoresults<-rbind(kuo.de,kuo.hnoun,kuo.hnoun1)
+
+rownames(kuoresults)<-c("de","head noun","head noun+1")
+colnames(kuoresults)<-c("coef.","SE","t-value")
+
+xtable(round(kuoresults,digits=2))
+@
+
+\section{Experiment 2: Qiang Li}
+
+<<>>=
+expt2.allregions<-read.table("expt2allregions.txt",header=T)
+
+head(expt2.allregions)
+
+region<-factor(ifelse(expt2.allregions$rcpos==1,"V/N",
+       ifelse(expt2.allregions$rcpos==2,"N/V",
+              ifelse(expt2.allregions$rcpos==3,"de",
+                     ifelse(expt2.allregions$rcpos==4,"head noun",ifelse(expt2.allregions$rcpos==5,"head noun+1",NA))))))
+
+region<-factor(region,levels=c("V/N","N/V","de","head noun","head noun+1"))
+
+unique(region)
+expt2.allregions$region<-region
+@
+
+Plotting:
+
+<<>>=
+critdata<-subset(expt2.allregions,condition%in%c("a","b"))
+critdata$condition<-factor(critdata$condition)
+
+RCType<-factor(ifelse(critdata$condition=="a","subject relative","object relative"),levels=c("subject relative","object relative"))
+
+critdata$RCType<-RCType
+
+library(reshape)
+
+data.rs <- melt(critdata, id=c("region","RCType","subj"), measure=c("rt"),na.rm=TRUE)
+
+data.id <- data.frame(cast(data.rs, subj + RCType + region ~ ., function(x) c(rt=mean(x), N=length(x) ) ))
+
+# (b) Remove between-subject variance
+##
+(GM <- mean(tapply(data.id$rt, data.id$subj, mean)))
+
+data.id <- ddply(data.id, .(subj), transform, rt.w = rt - mean(rt) + GM)  
+
+# (c) Compute condition means and error bars:  +/- 2 SE of means after removal of between-subject variance
+temp<-melt(data.id, id.var=c("subj","RCType","region"), measure.var="rt.w")
+
+(M.id.w <- cast(temp,RCType+region  ~ ., 
+                function(x) c(M=mean(x), SE=sd(x)/sqrt(length(x)), N=length(x) ) ) ) 
+@
+
+<<>>=
+#tiff("expt2.tiff",res=300,width=17.35,
+#     height=15.35,
+#     units="cm",compression="lzw",bg
+#="white")
+
+bitmap("fig4.tiff", height = 4, width = 7, units = 'in', type="tifflzw", res=600)
+
+
+byregion.plot<-function(data,
+                        mytitle,k=.5,
+                        x.lab="region",
+                        y.lab="reading time [msec]"){
+  ggplot(data,aes(x=region,y=M,
+                       group=RCType)) + 
+     geom_point(shape=21,size=k*3) +
+     geom_line(aes(linetype=RCType),size=k) +
+     geom_errorbar(aes(ymin=M-2*SE, 
+                       ymax=M+2*SE),
+                   width=.1,size=k)+
+     xlab(x.lab)+
+     ylab(y.lab)+             
+     labs(title=mytitle) +
+     theme_bw() 
+}
+
+(plot.regions<-byregion.plot(M.id.w,
+              mytitle="Experiment 2",k=.5,
+              x.lab="region",y.lab="reading time [msec]")
+)
+dev.off()
+@
+
+<<>>=
+# condition a: Subj-modifying SRC
+# condition b: Subj-modifying ORC
+# condition c: Obj-modifying  SRC
+# condition d: Obj-modifying  ORC
+## We focus on a,b for consistency with the 
+## earlier studies
+
+#a=subj rel, c=obj rel.
+
+critdata<-read.table("expt2critdata.txt",header=T)
+@
+
+<<>>=
+par( mfrow=c(2,3) )
+
+boxcox(rt~condition*subj,data=critdata[critdata$region=="de", ])
+boxcox(rt~condition*subj,data=critdata[critdata$region=="headnoun", ])
+boxcox(rt~condition*subj,data=critdata[critdata$region=="headnoun1", ])
+
+critdata$rrt <- -1000/critdata$rt
+
+
+headnoun <- subset(critdata,region=="headnoun")
+headnoun1 <- subset(critdata,region=="headnoun1")
+
+library(MASS)
+with(headnoun,boxcox(rt~condition*subj))
+@
+
+lmer models:
+
+<<>>=
+with(critdata,tapply(rt,IND=list(region,condition),mean))
+
+(m1<-lmer(rt~condition+(1|subj)+(1|item),headnoun))
+
+qqPlot(residuals(m1))
+
+(m2<-lmer(rrt~so+(1+so|subj)+(1|item),headnoun))
+
+qqPlot(residuals(m2))
+
+(m3<-lmer(rrt~so+(1+so|subj)+(1|item),headnoun1))
+
+qqPlot(residuals(m3))
+
+@
+
+By region analyses as demanded by reviewer:
+
+<<>>=
+(qiang.de.rrt<-lmer(rrt~so+(1+so|subj)+(1+so|item),subset(critdata,region=="de")))
+
+qqPlot(residuals(qiang.de.rrt))
+
+(qiang.hnoun.rrt<-lmer(rrt~so+(1+so|subj)+(1+so|item),subset(critdata,region=="headnoun")))
+
+qqPlot(residuals(qiang.hnoun.rrt))
+
+(qiang.hnoun1.rrt<-lmer(rrt~so+(1+so|subj)+(1+so|item),subset(critdata,region=="headnoun1")))
+
+qqPlot(residuals(qiang.hnoun1.rrt))
+
+#bwplot(rrt~cond,subset(critdata,region=="headnoun1" & rrt>-4))
+
+## assemble table:
+qiang.de<-c(fixef(qiang.de.rrt)[2],
+      sqrt(vcov(qiang.de.rrt))[2,2],
+      fixef(qiang.de.rrt)[2]/sqrt(vcov(qiang.de.rrt))[2,2])
+
+qiang.hnoun<-c(fixef(qiang.hnoun.rrt)[2],
+      sqrt(vcov(qiang.hnoun.rrt))[2,2],
+      fixef(qiang.hnoun.rrt)[2]/sqrt(vcov(qiang.hnoun.rrt))[2,2])
+
+qiang.hnoun1<-c(fixef(qiang.hnoun1.rrt)[2],
+      sqrt(vcov(qiang.hnoun1.rrt))[2,2],
+      fixef(qiang.hnoun1.rrt)[2]/sqrt(vcov(qiang.hnoun1.rrt))[2,2])
+
+qiangresults<-rbind(qiang.de,qiang.hnoun,qiang.hnoun1)
+
+rownames(qiangresults)<-c("de","head noun","head noun+1")
+colnames(qiangresults)<-c("coef.","SE","t-value")
+
+xtable(qiangresults)
+@
+
+
+<<>>=
+#############Remove between subject variance for SE###############
+# (a) Aggregate to Subject x Condition means
+
+data.rs <- melt(critdata, id=c("condition","region", "subj"), measure=c("rt"),na.rm=TRUE)
+
+data.id <- data.frame(cast(data.rs, subj + condition + region ~ ., function(x) c(rt=mean(x), N=length(x) ) ))
+
+# (b) Remove between-subject variance
+##
+(GM <- mean(tapply(data.id$rt, data.id$subj, mean)))
+
+data.id <- ddply(data.id, .(subj), transform, rt.w = rt - mean(rt) + GM)  
+
+# (c) Compute condition means and error bars:  +/- 2 SE of means after removal of between-subject variance
+temp<-melt(data.id, id.var=c("subj","condition","region"), measure.var="rt.w")
+
+(M.id.w <- cast(temp,condition+region  ~ ., 
+                function(x) c(M=mean(x), SE=sd(x)/sqrt(length(x)), N=length(x) ) ) ) 
+@
+
+
+
+\section{Experiment 3: Gibson and Wu replication}
+
+Now we look at our ``exact'' replication of Gibson and Wu:
+
+<<>>=
+gwrerun<-read.table("gwrerun.txt",header=F)
+
+colnames(gwrerun) <- c("machine","subj","item","condition","pos","word","correct","rt")
+
+gwrerun$subj<-paste(gwrerun$machine,gwrerun$subj,sep="")
+
+questions.gwrerun <- subset(gwrerun,correct%in%c(0,1))
+
+
+#with(questions.gwrerun,tapply(as.integer(as.character(correct)),condition,mean))
+
+#lmer(I(-1/rt)~ condition+(1|subj)+(1|item),questions.gwrerun)
+
+
+#with(questions.gwrerun,tapply(rt,condition,mean))
+
+questions.lmer.gwrerun<- glmer(factor(correct)~condition+(1|item)+(1|item),questions.gwrerun,family=binomial())
+@
+
+Plotting:
+
+<<>>=
+## isolate relevant columns:
+gwdata<-gwrerun[,c(2,3,4,5,8)]
+
+#xtabs(~subj+condition,gwdata)
+
+region<-factor(ifelse(gwdata$pos==5,"V/N",
+               ifelse(gwdata$pos==6,"N/V",
+               ifelse(gwdata$pos==7,"de",
+                      ifelse(gwdata$pos==8,"head noun",
+                      ifelse(gwdata$pos==9,"head noun+1",-1))))),
+               levels=c("V/N","N/V","de","head noun","head noun+1"))
+
+gwdata$region<-region
+
+gwdata<-subset(gwdata,region!="-1")
+
+gwdata$region<-factor(gwdata$region)
+
+critdata<-gwdata
+
+critdata$subj<-factor(critdata$subj)
+
+with(subset(critdata,region=="de"),boxcox(rt~condition*subj))
+with(subset(critdata,region=="head noun"),boxcox(rt~condition*subj))
+with(subset(critdata,region=="head noun+1"),boxcox(rt~condition*subj))
+
+critdata$rrt<- -1000/critdata$rt
+
+critdata$cond <- factor(ifelse(critdata$cond=="subj-ext","subject relative","object relative"),levels=c("subject relative","object relative"))
+
+## rt plot
+data.rs <- melt(critdata, id=c("cond","region", "subj"), measure=c("rt"),na.rm=TRUE)
+
+data.id <- data.frame(cast(data.rs, subj + cond + region ~ ., function(x) c(rt=mean(x), N=length(x) ) ))
+
+# (b) Remove between-subject variance
+##
+(GM <- mean(tapply(data.id$rt, data.id$subj, mean)))
+
+data.id <- ddply(data.id, .(subj), transform, rt.w = rt - mean(rt) + GM)  
+
+# (c) Compute condition means and error bars:  +/- 2 SE of means after removal of between-subject variance
+temp<-melt(data.id, id.var=c("subj","cond","region"), measure.var="rt.w")
+
+(M.id.w <- cast(temp,cond+region  ~ ., 
+                function(x) c(M=mean(x), SE=sd(x)/sqrt(length(x)), N=length(x) ) ) ) 
+
+byregion.plot<-function(data,
+                        mytitle,k=1,
+                        x.lab="region",
+                        y.lab="reading time [msec]"){
+  ggplot(data,aes(x=region,y=M,
+                       group=cond)) + 
+     geom_point(shape=21,size=k*3) +
+     geom_line(aes(linetype=cond),size=k) +
+     geom_errorbar(aes(ymin=M-2*SE, 
+                       ymax=M+2*SE),
+                   width=.1,size=k)+
+     xlab(x.lab)+
+     ylab(y.lab)+             
+     labs(title=mytitle) +
+     theme_bw() 
+}
+
+## plot:
+#tiff("expt3.tiff",res=300,width=17.35,
+#     height=15.35,
+#     units="cm",compression="lzw",bg
+#="white")
+
+bitmap("fig5.tiff", height = 4, width = 7, units = 'in', type="tifflzw", res=600)
+
+(plot.regions<-byregion.plot(M.id.w,
+              mytitle="Experiment 3",k=0.5,
+              x.lab="region",y.lab="reading time [msec]")
+)
+dev.off()
+@
+
+
+The reviewer demands a fuller analysis:
+
+<<>>=
+so<-ifelse(critdata$condition=="subj-ext",-0.5,0.5)
+critdata$so<-so
+
+## a surprising OR advantage, cannot be attributed to
+## storage cost:
+(gwrerun.de.rrt <- lmer(rrt~so+(1+so|subj)+(1+so|item),subset(critdata,region=="de")))
+
+qqPlot(residuals(gwrerun.de.rrt))
+
+lattice::bwplot(rrt~cond,subset(critdata,region=="de"))
+
+row<-which(subset(critdata,region=="de")$rrt< -5.5)
+## item 1 is unusual but doesn't affect result:
+subset(critdata,region=="de")[row,]
+
+
+(gwrerun.hnoun.rrt <- lmer(rrt~so+(1+so|subj)+(1+so|item),subset(critdata,region=="head noun")))
+
+qqPlot(residuals(gwrerun.hnoun.rrt))
+
+row<-which(subset(critdata,region=="head noun")$rrt< -5.5)
+
+## item 3 in the object extracted condition is unusual:
+subset(critdata,region=="head noun")[row,]
+
+(gwrerun.hnoun1.rrt <- lmer(rrt~so+(1+so|subj)+(1+so|item),subset(critdata,region=="head noun+1")))
+
+qqPlot(residuals(gwrerun.hnoun1.rrt))
+
+## one data point is unusual on ORs, but does not affect result:
+lattice::bwplot(rrt~cond,subset(critdata,region=="head noun+1" & rrt> -6))
+
+## get coefs, SEs, t-values:
+gwrerun.de<-c(fixef(gwrerun.de.rrt)[2],
+      sqrt(vcov(gwrerun.de.rrt))[2,2],
+      fixef(gwrerun.de.rrt)[2]/sqrt(vcov(gwrerun.de.rrt))[2,2])
+
+gwrerun.hnoun<-c(fixef(gwrerun.hnoun.rrt)[2],
+      sqrt(vcov(gwrerun.hnoun.rrt))[2,2],
+      fixef(gwrerun.hnoun.rrt)[2]/sqrt(vcov(gwrerun.hnoun.rrt))[2,2])
+
+gwrerun.hnoun1<-c(fixef(gwrerun.hnoun1.rrt)[2],
+      sqrt(vcov(gwrerun.hnoun1.rrt))[2,2],
+      fixef(gwrerun.hnoun1.rrt)[2]/sqrt(vcov(gwrerun.hnoun1.rrt))[2,2])
+
+gwrerunresults<-rbind(gwrerun.de,gwrerun.hnoun,gwrerun.hnoun1)
+
+rownames(gwrerunresults)<-c("de","head noun","head noun+1")
+colnames(gwrerunresults)<-c("coef.","SE","t-value")
+xtable(gwrerunresults)
+@
+
+Combined analysis:
+
+<<>>=
+## rerun:
+gwrerun<-critdata
+## original data:
+gwcritdata<-gwcritdata[,c(1,2,3,4,7)]
+gwrerun<-gwrerun[,1:5]
+
+head(gwrerun)
+head(gwcritdata)
+colnames(gwcritdata)[3]<-"condition"
+
+gwcritdata$expt<-factor("gw")
+gwrerun$expt<-factor("gwrerun")
+
+gwall<-rbind(gwcritdata,gwrerun)
+head(gwall)
+
+length(unique(gwall$subj))
+#xtabs(~subj+condition,gwall)
+@
+
+<<>>=
+critdata<-gwall
+
+region<-factor(ifelse(critdata$pos==5,"V/N",
+               ifelse(critdata$pos==6,"N/V",
+               ifelse(critdata$pos==7,"de",
+                      ifelse(critdata$pos==8,"head noun",
+                      ifelse(critdata$pos==9,"head noun+1",-1))))),
+               levels=c("V/N","N/V","de","head noun","head noun+1"))
+
+
+critdata$region<-region
+
+critdata<-subset(critdata,region!="-1")
+
+critdata$region<-factor(critdata$region)
+
+critdata$subj<-factor(critdata$subj)
+
+with(subset(critdata,region=="de"),boxcox(rt~condition*subj))
+with(subset(critdata,region=="head noun"),boxcox(rt~condition*subj))
+with(subset(critdata,region=="head noun+1"),boxcox(rt~condition*subj))
+
+
+## for consistency, we use negative reciprocal:
+critdata$rrt<- -1000/critdata$rt
+
+critdata$type <- factor(ifelse(critdata$condition=="subj-ext","subject relative","object relative"),levels=c("subject relative","object relative"))
+
+
+data.rs <- melt(critdata, id=c("type","region", "subj"), measure=c("rt"),na.rm=TRUE)
+
+data.id <- data.frame(cast(data.rs, subj + type + region ~ ., function(x) c(rt=mean(x), N=length(x) ) ))
+
+# (b) Remove between-subject variance
+##
+(GM <- mean(tapply(data.id$rt, data.id$subj, mean)))
+
+data.id <- ddply(data.id, .(subj), transform, rt.w = rt - mean(rt) + GM)  
+
+# (c) Compute condition means and error bars:  +/- 2 SE of means after removal of between-subject variance
+temp<-melt(data.id, id.var=c("subj","type","region"), measure.var="rt.w")
+
+(M.id.w <- cast(temp,type+region  ~ ., 
+                function(x) c(M=mean(x), SE=sd(x)/sqrt(length(x)), N=length(x) ) ) ) 
+
+byregion.plot<-function(data,
+                        mytitle,k=1,
+                        x.lab="region",
+                        y.lab="reading time [msec]"){
+  ggplot(data,aes(x=region,y=M,
+                       group=type)) + 
+     geom_point(shape=21,size=k*3) +
+     geom_line(aes(linetype=type),size=k) +
+     geom_errorbar(aes(ymin=M-2*SE, 
+                       ymax=M+2*SE),
+                   width=.1,size=k)+
+     xlab(x.lab)+
+     ylab(y.lab)+             
+     labs(title=mytitle) +
+     theme_bw() 
+}
+
+tiff("expt3a.tiff",res=300,width=17.35,
+     height=15.35,
+     units="cm",compression="lzw",bg="white")
+
+bitmap("fig6.tiff", height = 4, width = 7, units = 'in', type="tifflzw", res=600)
+## plot:
+(plot.regions<-byregion.plot(M.id.w,
+              mytitle="Combined data (Gibson and Wu expt. \n and replication)",k=0.5,
+              x.lab="region",y.lab="reading time [msec]")
+)
+dev.off()
+@
+
+<<>>=
+critdata$so<-ifelse(critdata$condition=="subj-ext",-0.5,0.5)
+(gwall.de.rrt <- lmer(rrt~so+(1+so|subj)+(1+so|item),subset(critdata,region=="de")))
+
+qqPlot(residuals(gwall.de.rrt))
+
+(gwall.hnoun.rrt <- lmer(rrt~so+(1+so|subj)+(1+so|item),subset(critdata,region=="head noun")))
+
+qqPlot(residuals(gwall.hnoun.rrt))
+
+(gwall.hnoun1.rrt <- lmer(rrt~so+(1+so|subj)+(1+so|item),subset(critdata,region=="head noun+1" )))
+
+qqPlot(residuals(gwall.hnoun1.rrt))
+
+## sign of fit above changes if we remove the data points that have rrt> -6, but result does
+##not change:
+lattice::bwplot(rrt~condition,subset(critdata,region=="head noun+1" & rrt> -6))
+
+## get coefs, SEs, t-values:
+
+gwall.de<-c(fixef(gwall.de.rrt)[2],
+      sqrt(vcov(gwall.de.rrt))[2,2],
+      fixef(gwall.de.rrt)[2]/sqrt(vcov(gwall.de.rrt))[2,2])
+
+gwall.hn<-c(fixef(gwall.hnoun.rrt)[2],
+      sqrt(vcov(gwall.hnoun.rrt))[2,2],
+      fixef(gwall.hnoun.rrt)[2]/sqrt(vcov(gwall.hnoun.rrt))[2,2])
+
+gwall.hn1<-c(fixef(gwall.hnoun1.rrt)[2],
+      sqrt(vcov(gwall.hnoun1.rrt))[2,2],
+      fixef(gwall.hnoun1.rrt)[2]/sqrt(vcov(gwall.hnoun1.rrt))[2,2])
+
+gwallresults<-rbind(gwall.de,gwall.hn,gwall.hn1)
+rownames(gwallresults)<-c("de","head noun","head noun+1")
+colnames(gwallresults)<-c("coef","SE","t-value")
+
+xtable(round(gwallresults,digits=2))
+@
+
+\end{document}
